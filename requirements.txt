@@ -6,4 +6,3 @@ langchain
 langchain_core
 flask
 pandas
-io
