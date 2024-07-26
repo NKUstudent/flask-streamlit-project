@@ -1,17 +1,9 @@
-os
-json
 requests
-threading
 streamlit
 langchain_community
 langchain_huggingface
 langchain
 langchain_core
 flask
-PIL
 pandas
 io
-tempfile
-pathlib
-base64
-shutil
