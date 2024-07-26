@@ -4,9 +4,7 @@ import json
 import PIL
 import requests
 
-import sys
-sys.path.append('C:\\Users\\墨池洗砚\\Desktop\\学习\\暑期实训\\WorkSpace\\langchain-demo')
-from model_choice import modelchoice
+import modelchoice
 
 modelchoice.setenv()
 
