@@ -3,7 +3,10 @@ import os
 import json
 import requests
 import threading
+import chardet
 import shutil
+import streamlit as st
+from config import LangchainCFG
 from flask import Flask, jsonify, request
 from langchain_community.chat_models import ChatZhipuAI
 from langchain_community.document_loaders import (
@@ -30,6 +33,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 from langchain.memory import ConversationBufferMemory
 from langchain_community.chat_message_histories import RedisChatMessageHistory
 from langchain_core.runnables.history import RunnableWithMessageHistory
+from langchain_community.document_loaders import DirectoryLoader
 
 # 环境变量设置
 import modelchoice
@@ -38,40 +42,70 @@ modelchoice.setenv()
 os.environ['USER_AGENT'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.0.0'
 os.environ['SERPAPI_API_KEY'] = 'a3a020895a0debde83c3a13b048ce4c3fb97151dcd1ccd1769ed0a8a8abe1858'
 
+class Web_interface(object):
+    def __init__(self, chat_model):
+        self.chat_model = chat_model
+
+    def chat(self):
+        messages = st.container(height = 600)
+        user_input = st.chat_input('请输入...')
+        if user_input:
+            messages.chat_message('user').write(user_input)
+            messages.chat_message('assistant').write(self.chat_model.get_llm_answer(user_input))
+        with st.sidebar:
+            st.toast(user_input)
+
+
 class SourceService(object):
-    def __init__(self, db_path):
+    def __init__(self, config):
+        self.config = config
         self.vector_store = None
-        self.embeddings =  HuggingFaceEmbeddings(model_name = 'C:\\Users\\墨池洗砚\\Desktop\\学习\\暑期实训\\flask-streamlit-project\\m3e-base',
+        self.embeddings =  HuggingFaceEmbeddings(model_name = self.config.embedding_model_name,
                                                  model_kwargs = {'device': 'cpu'})
-        self.vector_store_path = db_path
+        self.vector_store_path = self.config.vector_store_path
+    
+    # 切分源文件
+    def split_source_file(self):
+        if os.path.exists(self.config.vector_store_path):
+            shutil.rmtree(self.config.vector_store_path)
+        if os.path.exists(self.config.doc_path):
+            shutil.rmtree(self.config.doc_path)
+        os.makedirs(self.config.vector_store_path)
+        os.makedirs(self.config.doc_path)
+    
+        endcoding = ''
+        with open(self.config.source_file_path, 'rb') as file:
+            raw_data = file.read()
+            result = chardet.detect(raw_data)
+            endcoding = result['encoding']
+            if endcoding == 'GB2312':
+                endcoding = 'GB18030'
+
+        open_txt = open(self.config.source_file_path, 'r', encoding = endcoding)
+        txt_line = open_txt.readlines()
+        line_list = []
+        for line in txt_line:
+            line_list.append(line)
+        count = len(line_list)
+    
+        # 切分txt文件
+        txt_split = [line_list[i:i+20] for i in range(0, count, 20)]
+        # 将切分的数据写入多个txt中
+        for i, j in zip(range(0, int(count/20+1)), range(0, int(count/20+1))):
+            with open('D:\\uploads\\《红楼梦》%d.txt' % j, 'w+', encoding = endcoding) as temp:
+                for line in txt_split[i]:
+                    temp.write(line)
     
     # 初始化向量数据库
-    def init_source_vector(self, document_dir):
+    def init_source_vector(self):
         documents = []
-        for filename in os.listdir(document_dir):
-            file_path = os.path.join(document_dir, filename)
-            if filename.endswith('.pdf'):
-                loader = PyPDFLoader(file_path)
-                documents.extend(loader.load())
-            elif filename.endswith('.docx'):
-                loader = Docx2txtLoader(file_path)
-                documents.extend(loader.load())
-            elif filename.endswith('.txt'):
-                loader = TextLoader(file_path)
-                documents.extend(loader.load())
-            elif filename.endswith('.csv'):
-                loader = CSVLoader(file_path)
-                documents.extend(loader.load())
+        text_loader_kwargs = {'autodetect_encoding': True}
+        loader = DirectoryLoader(self.config.doc_path, glob = "**/*.txt", loader_cls = TextLoader, loader_kwargs = text_loader_kwargs)
+        documents.extend(loader.load())
         self.vector_store = FAISS.from_documents(documents, self.embeddings)
         self.vector_store.save_local(self.vector_store_path)
-    
-    # 添加文件数据
-    def add_document(self, document_path):
-        loader = UnstructuredFileLoader(document_path, mode = 'elements')
-        doc_data = loader.load()
-        self.vector_store.add_documents(doc_data)
-        self.vector_store.save_local(self.vector_store_path)
 
+    # 上传本地的向量数据库
     def load_vector_store(self, path):
         if path is not None:
             self.vector_store = FAISS.load_local(path, self.embeddings)
@@ -87,10 +121,12 @@ class SourceService(object):
         self.vector_store.save_local(self.vector_store_path)
 
 class ChatModel(object):
-    def __init__(self, chat_llm, db_path, doc_path):
-        self.llm = chat_llm
-        self.source_service = SourceService(db_path)
-        self.source_service.init_source_vector(document_dir = doc_path)
+    def __init__(self, config):
+        self.config = config
+        self.llm = self.config.chat_llm
+        self.source_service = SourceService(self.config)
+        self.source_service.split_source_file()
+        self.source_service.init_source_vector()
         self.history = []
         
     # 创建模型框架
@@ -127,19 +163,7 @@ class ChatModel(object):
 
 
 if __name__ == '__main__':
-    doc_path = 'D:\\uploads'
-    db_path = 'D:\\vector_store'
-    if not os.path.exists(db_path):
-        os.makedirs(db_path)
-    else:
-        shutil.rmtree(db_path)
-        os.makedirs(db_path)
-    
-    chat_llm = ChatZhipuAI(model="glm-4")
-    chat_model = ChatModel(chat_llm = chat_llm, db_path = db_path, doc_path = doc_path)
-    while(True):
-        human_input = input('Human（输入end退出chat）: ')
-        if human_input == 'end':
-            break
-        else:
-            print(chat_model.get_llm_answer(human_input))
+    config = LangchainCFG()
+    chat_model = ChatModel(config)
+    page = Web_interface(chat_model)
+    page.chat()
